@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "miniwasi"
+version = "0.1.0"
+description = "Vectorised WASI-type bio-optical model with batched Levenberg-Marquardt inversion for Rrs spectra and ENVI images"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "Samuel Landolt" }]
+dependencies = [
+    "numpy",
+    "pandas",
+    "spectral",
+    "matplotlib",
+    "joblib",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.setuptools]
+packages = ["miniwasi"]
+
+[tool.setuptools.package-data]
+miniwasi = ["data/*.txt"]
