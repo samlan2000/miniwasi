@@ -104,6 +104,14 @@ class MiniWasi():
         self.n_obs = sizes.pop() if sizes else None   # None = shared by all spectra
 
 
+    def defined_bands(self):
+        """Boolean mask (L,) of the bands where all resampled SIOPs/water data are finite."""
+        spectra = (self.a_w_res, self.a_i_spec_res, self.bb_phy_norm_res, self.da_W_div_dT_res,
+                   self.a_norm_y, self.a_norm_nap, self.bb_w)
+        L = len(self.wavelengths)
+        return np.all([np.all(np.isfinite(np.reshape(x, (L, -1))), axis=1) for x in spectra], axis=0)
+
+
     def band_subset(self, bands):
         """
         Copy of the model restricted to some bands (boolean mask or indices), without
@@ -323,6 +331,16 @@ class MiniWasi():
         weights = np.asarray(weights, dtype=float)
         weights = weights / np.mean(weights)
         fit_bands = weights > 0
+        # bands outside the range of the SIOP/water data files are NaN after resampling
+        # (e.g. b_phy_norm starts at 350 nm): leave them out of the fit like weight 0
+        undefined = fit_bands & ~self.defined_bands()
+        if undefined.any():
+            warnings.warn("SIOPs undefined (outside the data files) at "
+                          f"{', '.join(f'{w:g}' for w in self.wavelengths[undefined])} nm: "
+                          "these bands are left out of the fit.")
+            fit_bands &= ~undefined
+        if not fit_bands.any():
+            raise ValueError("No band left to fit (all weights 0 or SIOPs undefined).")
         if not np.all(np.isfinite(Rrs_measured[:, fit_bands])):
             raise ValueError("Rrs_measured contains non-finite values on bands with weight > 0.")
 
