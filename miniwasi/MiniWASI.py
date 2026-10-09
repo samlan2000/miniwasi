@@ -199,7 +199,9 @@ class MiniWasi():
 
         # below water
         self.r_rs_below = f_rs * self.wb
-
+        
+        
+        # self.xi = 0.5374 #implemented as such in WASI6; assuming rho_Ed = 0.03, rho_Lu = 0.02, nW = 1.33 with self.xi = (1 - rho_Ed) * (1 - rho_Lu) / nW**2
         self.xi = (1-0.03)*(1-rho_L)/1.33**2 # ca. 0.53
 
         self.R_rs = self.xi * (self.r_rs_below/(1-0.54*5*self.r_rs_below))
@@ -270,6 +272,10 @@ class MiniWasi():
             result['residual'] sqrt(mean over all bands of (w/mean(w)) * (R_rs_model - R_rs)^2),
                                the same definition as the residual band of ImageProcessor
             result['success']  True if converged within max_iter
+                               Spectra the fit cannot handle numerically (non-finite model,
+                               Jacobian or cost, e.g. "SVD did not converge") get NaN for
+                               params, stderr and residual and success=False instead of
+                               aborting the whole inversion.
             result['n_iter']   number of iterations
         """
 
@@ -402,10 +408,11 @@ class MiniWasi():
             return Rrs - Rrs_measured[rows], self.jacobian(free)
 
         values = np.tile(start, (N, 1))
-        res, J = model(values, np.arange(N))
-        cost = np.sum(weights * res**2, axis=1)
+        with np.errstate(all="ignore"):
+            res, J = model(values, np.arange(N))
+            cost = np.sum(weights * res**2, axis=1)
         mu = np.full(N, 1e-3)
-        active = np.ones(N, dtype=bool)
+        active = self._finite_rows(cost, J)      # non-finite start: nothing to fit, reported as NaN
         n_iter = np.zeros(N, dtype=int)
 
         for _ in range(max_iter):
@@ -428,14 +435,15 @@ class MiniWasi():
 
             # Damped step, clipped to the bounds
             damping = mu[rows, None] * np.maximum(np.einsum('npp->np', H), 1e-30)
-            step = np.linalg.solve(H + damping[:, :, None] * identity, -g[:, :, None])[:, :, 0]
+            step = self._safe_solve(H + damping[:, :, None] * identity, -g)
             new_values = np.clip(values[rows] + step, lower, upper)
 
-            new_res, new_J = model(new_values, rows)
-            new_cost = np.sum(weights * new_res**2, axis=1)
+            with np.errstate(all="ignore"):
+                new_res, new_J = model(new_values, rows)
+                new_cost = np.sum(weights * new_res**2, axis=1)
 
-            # Accept improvements, adapt damping, check convergence
-            better = new_cost < cost[rows]
+            # Accept improvements (only with a finite model and Jacobian), adapt damping, check convergence
+            better = (new_cost < cost[rows]) & self._finite_rows(new_cost, new_J)
             converged = better & (cost[rows] - new_cost <= tol * cost[rows] + 1e-30)
             accepted = rows[better]
             values[accepted] = new_values[better]
@@ -447,7 +455,39 @@ class MiniWasi():
             active[rows[mu[rows] > 1e10]] = False   # no further decrease possible: at the minimum
 
         stderr = self._standard_errors(values, J, cost, weights, lower, upper)
-        return values, cost, n_iter, ~active, stderr
+        success = ~active
+
+        # spectra that failed numerically: NaN instead of an error for the whole block
+        failed = ~self._finite_rows(cost, J) | ~np.all(np.isfinite(values), axis=1)
+        values[failed] = np.nan
+        cost[failed] = np.nan
+        stderr[failed] = np.nan
+        success[failed] = False
+        return values, cost, n_iter, success, stderr
+
+
+    @staticmethod
+    def _finite_rows(cost, J):
+        """True for the spectra whose cost and Jacobian are finite."""
+        return np.isfinite(cost) & np.all(np.isfinite(J), axis=tuple(range(1, J.ndim)))
+
+
+    @staticmethod
+    def _safe_solve(A, b):
+        """Solve A[n] x[n] = b[n] for a stack of small systems. Rows with non-finite or
+        singular A give NaN (the step is then rejected) instead of raising LinAlgError."""
+        x = np.full(b.shape, np.nan)
+        ok = np.all(np.isfinite(A), axis=(1, 2)) & np.all(np.isfinite(b), axis=1)
+        if ok.any():
+            try:
+                x[ok] = np.linalg.solve(A[ok], b[ok][:, :, None])[:, :, 0]
+            except np.linalg.LinAlgError:
+                for i in np.flatnonzero(ok):           # find the singular one(s)
+                    try:
+                        x[i] = np.linalg.solve(A[i], b[i])
+                    except np.linalg.LinAlgError:
+                        pass
+        return x
 
 
     @staticmethod
@@ -460,11 +500,24 @@ class MiniWasi():
         p = values.shape[1]
         on_bound = (values <= lower) | (values >= upper)
         free_mask = (~on_bound).astype(float)
-        H = np.einsum('nlp,nlq->npq', J * weights[:, None], J)
+        with np.errstate(all="ignore"):
+            H = np.einsum('nlp,nlq->npq', J * weights[:, None], J)
         H = H * free_mask[:, :, None] * free_mask[:, None, :] + on_bound[:, :, None] * np.eye(p)
         dof = len(weights) - np.sum(~on_bound, axis=1)
         s2 = np.where(dof > 0, cost / np.maximum(dof, 1), np.nan)
+        # pinv raises "SVD did not converge" for non-finite matrices: only invert finite ones
+        diag = np.full((len(H), p), np.nan)
+        ok = np.all(np.isfinite(H), axis=(1, 2))
+        if ok.any():
+            try:
+                diag[ok] = np.einsum('npp->np', np.linalg.pinv(H[ok]))
+            except np.linalg.LinAlgError:
+                for i in np.flatnonzero(ok):
+                    try:
+                        diag[i] = np.diag(np.linalg.pinv(H[i]))
+                    except np.linalg.LinAlgError:
+                        pass
         with np.errstate(invalid="ignore"):
-            stderr = np.sqrt(np.einsum('npp->np', np.linalg.pinv(H)) * s2[:, None])
+            stderr = np.sqrt(diag * s2[:, None])
         stderr[on_bound] = np.nan
         return stderr
