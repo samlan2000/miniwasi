@@ -16,9 +16,17 @@ ImageProcessor. Differences:
   * Extra arguments: block_size (spectra per block), n_jobs (cores, -1 = all),
     progress (tqdm progress bar over blocks, shown when there is more than one block).
 The "residual" band has the same definition as in the original ImageProcessor.
+
+The output header also records processing information: processing date (UTC), miniwasi
+version, wall-clock processing times (total and inversion only), number of valid pixels,
+time per pixel, number of pixels that did not converge or failed, and n_jobs. The same
+numbers are available as self.timing after run().
 """
 
+import time
 import warnings
+from datetime import datetime, timezone
+from importlib.metadata import version, PackageNotFoundError
 
 import numpy as np
 from spectral import envi
@@ -67,6 +75,7 @@ class ImageProcessor():
         Process ENVI BSQ image with the batched WASI inversion and write ENVI BSQ output
         using georeference from input header.
         """
+        t_start = time.perf_counter()
         hdr_path = self.img_path.replace(".bsq", ".hdr")
 
         # -------------------------------------------------
@@ -100,13 +109,22 @@ class ImageProcessor():
 
         flat = np.zeros((lines * samples, self.n_bands_out), dtype=np.float32)
         self.fit = None
+        t_inv = 0.0
+        n_failed = n_not_converged = 0
         if valid.any():
+            t_inv = time.perf_counter()
             self.fit = self.model.invert(pixels[valid], weights=self.weights, vary=self.vary,
                                          init=self.init, bounds=self.bounds,
                                          block_size=self.block_size, n_jobs=self.n_jobs,
                                          progress=self.progress)
-            if not np.all(self.fit["success"]):
-                warnings.warn(f"{np.sum(~self.fit['success'])} pixels did not converge within max_iter.")
+            t_inv = time.perf_counter() - t_inv
+            # failed = numerical failure (NaN results); not converged = stopped at max_iter
+            n_failed = int(np.sum(np.isnan(self.fit["residual"])))
+            n_not_converged = int(np.sum(~self.fit["success"])) - n_failed
+            if n_not_converged:
+                warnings.warn(f"{n_not_converged} pixels did not converge within max_iter.")
+            if n_failed:
+                warnings.warn(f"{n_failed} pixels failed numerically (written as NaN).")
 
             out_valid = np.zeros((valid.sum(), self.n_bands_out), dtype=np.float32)
             for k, name in enumerate(self.output_wcs):
@@ -135,6 +153,29 @@ class ImageProcessor():
         out_hdr["wavelength"] = [0] * n_scalar + wavelengths.tolist() * len(self.output_iops) + [0]
         out_hdr.pop("fwhm", None)
 
+        # processing information (wall-clock times; "total" excludes writing the file itself)
+        try:
+            pkg_version = version("miniwasi")
+        except PackageNotFoundError:
+            pkg_version = "unknown"
+        n_valid = int(valid.sum())
+        t_total = time.perf_counter() - t_start
+        self.timing = {
+            "total_s": t_total,
+            "inversion_s": t_inv,
+            "valid_pixels": n_valid,
+            "ms_per_pixel": 1e3 * t_inv / n_valid if n_valid else 0.0,
+        }
+        out_hdr["processing date"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        out_hdr["miniwasi version"] = pkg_version
+        out_hdr["processing time total (s)"] = round(t_total, 3)
+        out_hdr["processing time inversion (s)"] = round(t_inv, 3)
+        out_hdr["valid pixels"] = n_valid
+        out_hdr["time per pixel (ms)"] = round(self.timing["ms_per_pixel"], 4)
+        out_hdr["pixels not converged"] = n_not_converged
+        out_hdr["pixels failed"] = n_failed
+        out_hdr["n_jobs"] = self.n_jobs
+
         # -------------------------------------------------
         # Write ENVI BSQ
         # -------------------------------------------------
@@ -147,14 +188,15 @@ class ImageProcessor():
             metadata=out_hdr,
             force=True,
         )
-        print("Saved ENVI BSQ:", self.out_path)
+        print(f"Saved ENVI BSQ: {self.out_path}  "
+              f"(total {t_total:.1f} s, inversion {t_inv:.1f} s, {n_valid} valid pixels)")
 
         return self.results
 
     def plot_results(self, out_path=None):
 
         def pclip(a, low=2, high=98):
-            return np.percentile(a, [low, high])
+            return np.nanpercentile(a, [low, high])   # failed pixels are NaN
 
         n = len(self.output_wcs)
         fig, axs = plt.subplots(1, n, figsize=(6 * n, 6))

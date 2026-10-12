@@ -235,6 +235,7 @@ class MiniWasi():
         Chain rule through the model:
             dR_rs/dC = dR_rs/dr_rs * dr_rs/dwb * (dwb/da * da/dC + dwb/dbb * dbb/dC)
         """
+        # chain rule turns the derivative of the whole chain into a product of simple local derivatives
         wb = self.wb
         r = self.r_rs_below
 

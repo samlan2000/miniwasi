@@ -120,6 +120,9 @@ def resample_a_i_spec_loe(wavelengths = np.arange(400,900), FWHMs = None):
     :param FWHMs: full width at half maximum of the output bands (optional)
     :return: specific absorption coefficients of eight phytoplankton types resampled to
              input wavelengths, shape (len(wavelengths), 8), columns in the order listed above
+             
+    OPEN ISSUE: PADDING IS NOT REACHING FULL FWHM/SRF RANGE; 
+    eliminate padding altogether and raise warning/not use affected bands?
     """
     wavelengths = np.asarray(wavelengths, dtype=float)
     out_min, out_max = wavelengths.min(), wavelengths.max()
