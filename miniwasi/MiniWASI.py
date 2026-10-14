@@ -139,7 +139,7 @@ class MiniWasi():
                 C_6 = 0, C_7 = 0, obs=None):
         """
         Every C_* may be a scalar or an array of shape (N,). With scalars all outputs have
-        shape (L,), otherwise (N, L).
+        shape (L,), otherwise (N, L), i.e. (number of spectra, number of bands).
         obs: only needed with per-observation conditions; indices of the observations
              (entries of T/va/sza) that the N spectra belong to. Default: all of them.
         """

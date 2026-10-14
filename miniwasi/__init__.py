@@ -8,5 +8,5 @@ Levenberg-Marquardt inversion, and an ENVI image processor built on it.
 from .MiniWASI import MiniWasi
 from .ImageProcessor import ImageProcessor
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = ["MiniWasi", "ImageProcessor"]
