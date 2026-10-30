@@ -1,11 +1,11 @@
 Specific absorption of Dinoflagellates (m^2/mg)
 
 Species:   Gymnodinium sanquineum
-Source:    RÃ¶ttgers
-Reference: 
+Source:    Röttgers
+Reference:
 Modifications by Maire:
-- Fit with a sum of Lorentzian functions ==> didn't do this 
-- Normalisation to a*(440) = 0.0315 m^2/mg 
+- Fit with a sum of Lorentzian functions ==> didn't do this
+- Normalisation to a*(440) = 0.0315 m^2/mg
 - Rescaled with factor 1.6 according to Gege (2012)
 
  nm    m^2/mg
@@ -198,18 +198,3 @@ Modifications by Maire:
 722	0.000543659
 724	0.000312897
 726	2.92198E-05
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	

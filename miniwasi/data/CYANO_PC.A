@@ -1,9 +1,9 @@
 Specific absorption of Cyanobacteria with PC pigment (m^2/mg)
 
 Species:   Microcystis aeruginosa
-Source:    Absorption measurement from monoculture (grown under artifical white light). From the Culture Collection of Northern Poland of the Laboratory of Biochemical Ecology of Microorganisms from the University of Gdansk. 
+Source:    Absorption measurement from monoculture (grown under artifical white light). From the Culture Collection of Northern Poland of the Laboratory of Biochemical Ecology of Microorganisms from the University of Gdansk.
 Reference: Wojtasiewick, 2016. Bio-optical characterization of selected cyanobacteria strains present in marine and freshwater ecosystems.
-Modifications by Loé:
+Modifications by Lo�:
 - Smoothing of the spectrum with a savgol filter (window size = 21; polynomial order = 4)
 
  nm	m^2/mg
@@ -208,8 +208,3 @@ Modifications by Loé:
 796	0.00151702
 798	0.001372496
 800	0.001188084
-
-
-
-	
-

@@ -4,23 +4,11 @@ from . import resampling
 import warnings
 from tqdm import tqdm
 from joblib import Parallel, delayed
-warnings.filterwarnings("ignore", 'Image data contains NaN values.')
 
 
 class MiniWasi():
     """
-    Vectorised WASI-type bio-optical model for deep water. Same physics, SIOPs and
-    attribute names as the original lmfit-based MiniWasi.
-
-    Differences to the original lmfit-based MiniWasi:
-      * forward() accepts arrays: every C_* may be a scalar or an array of shape (N,);
-        all outputs (self.a, self.bb, self.R_rs, ...) then have shape (N, L) instead of (L,).
-      * invert() takes one spectrum (L,) or many spectra (N, L) and fits them all at once
-        with a bounded Levenberg-Marquardt using the analytic Jacobian (see jacobian()).
-        It no longer uses lmfit and returns a plain dict instead of an lmfit result.
-      * T, va and sza may also be arrays of shape (N,), one value per observation
-        (e.g. in-situ matchups with their own geometry). set_conditions() changes them
-        without reloading the SIOPs.
+    Vectorised WASI-type bio-optical model for deep water.
     """
 
     def __init__(self, wavelengths = np.arange(400,900), FWHMs = None,
@@ -38,21 +26,24 @@ class MiniWasi():
         self.s_nap = s_nap
         self.n = n
 
-        # Normalized cdom absorption coefficient at 440 nm
-        self.a_norm_y = resampling.resample_a_Y_norm(wavelengths, FWHMs) if a_norm_y_from_file else np.exp(-self.s_cdom*(self.wavelengths-440))
+        # SIOPs and water data from the WASI7 files in miniwasi/data (see resampling.py),
+        # resampled to the sensor bands
+        # Normalized CDOM absorption (1 at 440 nm): file (Gaussian model) or exponential
+        self.a_norm_y = (resampling.resample(resampling.CDOM_NORM, self.wavelengths, FWHMs) if a_norm_y_from_file
+                         else np.exp(-self.s_cdom*(self.wavelengths-440)))
 
-        # Normalized nap absorption coefficient at 440 nm
+        # Normalized NAP absorption (1 at 440 nm)
         self.a_norm_nap = np.exp(-self.s_nap*(self.wavelengths-440))
 
-        # Absorption of water
-        self.a_w_res = resampling.resample_a_w(wavelengths, FWHMs)
-        # Specific absorption coefficients of 8 phytoplankton types
-        # (6 standard WASI6 classes + CYANO_PC + DINOFLAGELLATES_G)
-        self.a_i_spec_res = resampling.resample_a_i_spec_loe(wavelengths, FWHMs)
-        # Normalized backscattering coefficient of phytoplankton
-        self.bb_phy_norm_res = resampling.resample_b_phy_norm(wavelengths, FWHMs)
+        # Absorption of pure water at 20 degC
+        self.a_w_res = resampling.resample(resampling.WATER, self.wavelengths, FWHMs)
+        # Specific absorption of the 8 phytoplankton classes C_0 ... C_7 (resampling.PHYTO):
+        # 6 WASI7 classes + CYANO_PC + DINOFLAGELLATES_GSANQUINEUM; shape (L, 8)
+        self.a_i_spec_res = resampling.resample_phyto(self.wavelengths, FWHMs)
+        # Normalized backscattering of phytoplankton
+        self.bb_phy_norm_res = resampling.resample(resampling.BB_PHY_NORM, self.wavelengths, FWHMs)
         # Temperature gradient of pure water absorption
-        self.da_W_div_dT_res = resampling.resample_da_W_div_dT(wavelengths, FWHMs)
+        self.da_W_div_dT_res = resampling.resample(resampling.DAW_DT, self.wavelengths, FWHMs)
 
         # Backscattering of water
         self.bb_w = 0.00111 * (self.wavelengths/500)**(-4.32)
@@ -198,7 +189,6 @@ class MiniWasi():
         # Relate IOPs to Rrs
         ####
         self.wb = (self.bb/(self.a+self.bb))
-        self.wb = np.clip(self.wb, 0, 1)
 
         # Account for anisotropy (polynomial in wb times a geometry factor)
         self.f_rs_geometry = 0.0512 * (1 + 0.1098/np.cos(inwater_sza)) * (1 + 0.4021/np.cos(inwater_va))
@@ -213,13 +203,6 @@ class MiniWasi():
         self.xi = (1-0.03)*(1-rho_L)/1.33**2 # ca. 0.53
 
         self.R_rs = self.xi * (self.r_rs_below/(1-0.54*5*self.r_rs_below))
-
-        self.R_rs = np.nan_to_num(
-                        self.R_rs,
-                        nan=0.0,
-                        posinf=0.0,
-                        neginf=0.0
-                    )
 
         # Kd for jonas
         self.Kd = 1.0546 * ((self.a + self.bb) / np.cos(inwater_sza))
@@ -379,12 +362,8 @@ class MiniWasi():
                 fit_model.__dict__.pop(name, None)
             tasks = (delayed(fit_model._levenberg_marquardt)(Rrs_fit[s:s+block_size], obs[s:s+block_size], **settings)
                      for s in starts)
-            try:
-                # results come back in order as blocks finish, so the bar shows real progress
-                results = Parallel(n_jobs=n_jobs, prefer="processes", return_as="generator")(tasks)
-            except TypeError:
-                # joblib < 1.3 has no return_as: the bar only fills once all blocks are done
-                results = Parallel(n_jobs=n_jobs, prefer="processes")(tasks)
+            # results come back in order as blocks finish, so the bar shows real progress
+            results = Parallel(n_jobs=n_jobs, prefer="processes", return_as="generator")(tasks)
             blocks = list(tqdm(results, **progress_bar))
         theta, cost, n_iter, success, stderr = (np.concatenate(x) for x in zip(*blocks))
 

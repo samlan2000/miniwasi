@@ -1,28 +1,3 @@
-"""
-ImageProcessor: inverts every valid pixel of an ENVI BSQ image with miniwasi.MiniWasi
-and writes the results as ENVI BSQ (no lmfit needed).
-
-This class only handles image I/O: read the ENVI cube, mask invalid pixels, call
-model.invert() on all valid pixels at once, get the IOPs from model.forward(), write the
-ENVI output, plot. All physics and fitting live in the model. After run(), self.fit holds
-the result dict of model.invert() for the valid pixels (params, stderr, residual,
-success, n_iter; arrays in the order of the valid pixels) and self.valid the pixel mask.
-
-Same constructor arguments, run() and plot_results() as the original lmfit-based
-ImageProcessor. Differences:
-  * `minimizer` and `use_previous_init` are accepted but ignored (always LM, fixed init).
-  * Bands with zero weight are dropped before fitting (same minimum, less work).
-  * The output ENVI file is written with a .bsq extension (ImageProcessor writes .img).
-  * Extra arguments: block_size (spectra per block), n_jobs (cores, -1 = all),
-    progress (tqdm progress bar over blocks, shown when there is more than one block).
-The "residual" band has the same definition as in the original ImageProcessor.
-
-The output header also records processing information: processing date (UTC), miniwasi
-version, wall-clock processing times (total and inversion only), number of valid pixels,
-time per pixel, number of pixels that did not converge or failed, and n_jobs. The same
-numbers are available as self.timing after run().
-"""
-
 import time
 import warnings
 from datetime import datetime, timezone
@@ -30,12 +5,12 @@ from importlib.metadata import version, PackageNotFoundError
 
 import numpy as np
 from spectral import envi
-import matplotlib.pyplot as plt
 
 from .MiniWASI import MiniWasi
 
 IOP_NAMES = ("a", "a_cdom", "a_nap", "a_phy", "bb", "bb_nap", "bb_phy")
-UNITS = {**{f"C_{i}": "µg/L" for i in range(8)}, "C_x": "mg/L", "C_mie": "mg/L", "C_y": "1/m"}
+UNITS = {**{f"C_{i}": "µg/L" for i in range(8)}, "C_phy": "µg/L", "C_x": "mg/L", "C_mie": "mg/L",
+         "C_y": "1/m"}
 
 
 # ---------------------------------------------------------------------------
@@ -45,9 +20,8 @@ UNITS = {**{f"C_{i}": "µg/L" for i in range(8)}, "C_x": "mg/L", "C_mie": "mg/L"
 class ImageProcessor():
 
     def __init__(self, img_path, out_path, weights=None, vary=None, bounds=None,
-                 init=None, output_wcs=None, output_iops=None,
-                 use_previous_init=False, minimizer="leastsq", siops=None,
-                 block_size=2000, n_jobs=-1, progress=True):
+                 init=None, output_wcs=None, output_iops=None, siops=None,
+                 block_size=2000, n_jobs=-1, progress=True, model=None):
 
         self.img_path = img_path
         self.out_path = out_path
@@ -55,16 +29,17 @@ class ImageProcessor():
         self.vary = dict(vary or {"C_0": True, "C_x": True, "C_y": True})
         self.bounds = dict(bounds or {"C_y": (0, 1), "C_0": (0, 15), "C_x": (0, 50)})
         self.init = dict(init or {"C_y": 0.1, "C_0": 3, "C_x": 1})
-        self.output_wcs = sorted(output_wcs or ["C_0", "C_x", "C_y"])
+        # C_phy is always written (after the concentrations), so it is not listed here
+        self.output_wcs = sorted(set(output_wcs or ["C_0", "C_x", "C_y"]) - {"C_phy"})
         self.output_iops = sorted(output_iops if output_iops is not None else [])
         unknown = set(self.output_iops) - set(IOP_NAMES)
         if unknown:
             raise ValueError(f"Unknown output_iops: {sorted(unknown)}")
-        if use_previous_init:
-            warnings.warn("use_previous_init is ignored by ImageProcessor.")
-        if minimizer != "leastsq":
-            warnings.warn("minimizer is ignored by ImageProcessor (always Levenberg-Marquardt).")
         self.siops = dict(siops or {})
+        if model is not None and set(self.siops) - {"T"}:
+            raise ValueError("With model=..., siops may only contain 'T'; set "
+                             f"{sorted(set(self.siops) - {'T'})} when creating the model.")
+        self.model_in = model
         self.block_size = block_size
         self.n_jobs = n_jobs
         self.progress = progress
@@ -87,16 +62,28 @@ class ImageProcessor():
         sza = float(header["sza"][0])
         vza = float(header["vza"][0])
 
-        cube = np.asarray(envi.open(hdr_path, self.img_path).load())  # (lines, samples, bands)
+        with warnings.catch_warnings():     # NaN outside the lake is expected
+            warnings.filterwarnings("ignore", "Image data contains NaN values.")
+            cube = np.asarray(envi.open(hdr_path, self.img_path).load())  # (lines, samples, bands)
         lines, samples, bands = cube.shape
 
         # -------------------------------------------------
         # Create WASI object
         # -------------------------------------------------
-        self.model = MiniWasi(wavelengths=wavelengths, FWHMs=FWHMs, va=vza, sza=sza, **self.siops)
+        if self.model_in is None:
+            self.model = MiniWasi(wavelengths=wavelengths, FWHMs=FWHMs, va=vza, sza=sza, **self.siops)
+        else:
+            # reuse the model (SIOPs already resampled): only update geometry / temperature
+            self.model = self.model_in
+            if (len(self.model.wavelengths) != len(wavelengths)
+                    or not np.allclose(self.model.wavelengths, wavelengths)):
+                raise ValueError(f"model wavelengths {self.model.wavelengths} do not match the image "
+                                 f"wavelengths {wavelengths} ({self.img_path}).")
+            self.model.set_conditions(sza=sza, va=vza, T=self.siops.get("T"))
 
-        # fitted concentrations + one spectrum per IOP + residual band
-        n_scalar = len(self.output_wcs)
+        # fitted concentrations + C_phy + one spectrum per IOP + residual band
+        n_wcs = len(self.output_wcs)
+        n_scalar = n_wcs + 1
         self.n_bands_out = n_scalar + len(self.output_iops) * len(wavelengths) + 1
 
         # -------------------------------------------------
@@ -107,7 +94,7 @@ class ImageProcessor():
         self.valid = valid.reshape(lines, samples)
         print(f"Starting batched inversion of {valid.sum()} valid pixels...")
 
-        flat = np.zeros((lines * samples, self.n_bands_out), dtype=np.float32)
+        flat = np.full((lines * samples, self.n_bands_out), np.nan, dtype=np.float32)
         self.fit = None
         t_inv = 0.0
         n_failed = n_not_converged = 0
@@ -129,6 +116,8 @@ class ImageProcessor():
             out_valid = np.zeros((valid.sum(), self.n_bands_out), dtype=np.float32)
             for k, name in enumerate(self.output_wcs):
                 out_valid[:, k] = self.fit["params"][name]
+            # total phytoplankton: sum of all classes (fixed ones at their init value)
+            out_valid[:, n_wcs] = sum(self.fit["params"][f"C_{i}"] for i in range(8))
             if self.output_iops:
                 # forward() with the fitted concentrations sets the IOPs, shape (n_valid, L)
                 self.model.forward(**self.fit["params"])
@@ -148,7 +137,7 @@ class ImageProcessor():
         out_hdr["bands"] = self.n_bands_out
         out_hdr["interleave"] = "bsq"
         out_hdr["data type"] = 4  # float32
-        out_hdr["band names"] = self.output_wcs + expanded_iop_names + ["residual"]
+        out_hdr["band names"] = self.output_wcs + ["C_phy"] + expanded_iop_names + ["residual"]
         # scalars and residual get dummy wavelengths
         out_hdr["wavelength"] = [0] * n_scalar + wavelengths.tolist() * len(self.output_iops) + [0]
         out_hdr.pop("fwhm", None)
@@ -194,6 +183,7 @@ class ImageProcessor():
         return self.results
 
     def plot_results(self, out_path=None):
+        import matplotlib.pyplot as plt     # only needed here: processing does not load matplotlib
 
         def pclip(a, low=2, high=98):
             return np.nanpercentile(a, [low, high])   # failed pixels are NaN
@@ -215,7 +205,3 @@ class ImageProcessor():
             plt.savefig(out_path, dpi=300)
             print(f".png of inversion results saved at: {out_path}")
         plt.show()
-
-
-# Old name, kept so existing scripts keep working
-ImageProcessorExperimental = ImageProcessor

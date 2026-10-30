@@ -1,10 +1,10 @@
-Normalized backscattering coefficient of phytoplankton as distributed with the Water Color Simulator 6 (WASI6) [1]
-obtained by fitting a measurement of b_b_phy(lambda) for green algae from Lake Garda in the range from 400 to 900 nm (Giardino, personal communication) 
-and extrapolating the fit curve to the range from 350 to 1000 nm.
-
-[1] Gege (2021): The Water Colour Simulator WASI. User manual for WASI version 6.
-
-wavelength_nm	bb_phy_norm	
+Normalized backscattering coefficient of phytoplankton		
+		
+	526	Reference wavelength
+	-1.4	Angström exponent
+		
+Lambda	bb_phy	
+nm	normalized	
 350	1.768824641	
 351	1.761773523	
 352	1.754770452	

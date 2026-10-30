@@ -1,7 +1,4 @@
-Absorption coefficient of pure water (1/m) 
-from the Water Color Simulator 6 (WASI6) [1]
-
-[1] Gege (2021): The Water Colour Simulator WASI. User manual for WASI version 6.
+Absorption coefficient of pure water (1/m)	
 	
 190-196.6 nm:  Warren (1995)	
 200-227 nm:    Quickenden & Irvin (1980)	
@@ -9,10 +6,10 @@ from the Water Color Simulator 6 (WASI6) [1]
 304-386 nm:    Lu (2006)	
 387.5-710 nm:  Pope & Fry (1997)	
 712.3-1838 nm: Kou et al. (1993)	
-1844-4000 nm:  Roettgers et al. (2013)	
-The gaps have been interpolated using an Akima fit [1]. 
+1844-4000 nm:  Röttgers et al. (2012)	
+The gaps have been interpolated using an Akima fit 
 	
-wavelength_nm	a	
+ nm       1/m	
 190	5.4986216
 191	5.0056486
 192	4.5126757
