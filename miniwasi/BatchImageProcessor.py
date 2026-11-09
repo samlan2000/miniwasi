@@ -40,7 +40,7 @@ class BatchImageProcessor():
     in_dir:           folder with the input .bsq/.hdr files
     out_dir:          output folder (created if needed)
     siops:            MiniWasi settings (bb_nap_spec, a_spec_nap_440nm, bb_phy_spec, s_cdom,
-                      s_nap, n, a_norm_y_from_file, T). "T" is applied per image, all others
+                      s_nap, n, a_norm_y_from_file, resampling, T). "T" is applied per image, all others
                       when the model is created.
     processor_kwargs: ImageProcessor arguments (weights, vary, bounds, init, output_wcs,
                       output_iops, block_size); not siops, model, n_jobs or progress

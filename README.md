@@ -1,7 +1,7 @@
 # miniwasi
 
 Vectorised WASI-type bio-optical model for deep water (SIOPs from the WASI7 database files
-plus CYANO_PC and DINOFLAGELLATES_GSANQUINEUM) with a batched, bounded Levenberg-Marquardt inversion using the analytic
+plus CYANO_PC) with a batched, bounded Levenberg-Marquardt inversion using the analytic
 Jacobian, an `ImageProcessor` that inverts ENVI BSQ images with it, and a
 `BatchImageProcessor` that processes whole folders of images in parallel.
 
@@ -70,9 +70,15 @@ pytest tests
 
 ## Credits
 
-Resampling code adapted from the bio_optics package: König, M., Noel, P., Hondula, K.L.,
-Jamalinia, E., Dai, J., Vaughn, N.R., Asner, G.P. (2023), https://doi.org/10.5281/zenodo.10246860.
 SIOPs and water data: original WASI7 database files in `miniwasi/data` (Gege (2021), The Water
 Colour Simulator WASI, user manual for version 6; sources in the file headers), plus CYANO_PC
-(Wojtasiewicz 2016) and DINOFLAGELLATES_GSANQUINEUM (Röttgers). The file list and the order of
-the phytoplankton classes C_0 ... C_7 are in `miniwasi/resampling.py`.
+(Wojtasiewicz 2016). The file list and the order of the phytoplankton classes C_0 ... C_6 are in
+`miniwasi/resampling.py`.
+
+The data files are resampled to the sensor bands as in WASI (Gaussian band response from the
+FWHMs, +- 3 sigma; `resample_Gauss` in WASI 7). `MiniWasi(..., resampling="bandresampler")`
+(or `siops={"resampling": "bandresampler"}` in the image processors) reproduces miniwasi <= 0.3,
+which used `spectral.BandResampler` as in the bio_optics package: König, M., Noel, P.,
+Hondula, K.L., Jamalinia, E., Dai, J., Vaughn, N.R., Asner, G.P. (2023),
+https://doi.org/10.5281/zenodo.10246860. The method is written to the output header
+(`siop resampling`).

@@ -8,8 +8,8 @@ from miniwasi import ImageProcessor
 PROCESSOR_KWARGS = dict(
     weights=[0]*22+[1]*202+[0]*38,
     vary={"C_x": True, "C_y": True, "C_0": False, "C_1": True, "C_2": False, 
-          "C_3": True, "C_4": False,  "C_5": True, "C_6": True, "C_7": False},
-    init={"C_y": 0.3, "C_0": 0, "C_x": 0.5, "C_1": 5, "C_3": 5, "C_5": 5, "C_6": 5, "C_7": 0},
+          "C_3": True, "C_4": False,  "C_5": True, "C_6": True},
+    init={"C_y": 0.3, "C_0": 0, "C_x": 0.5, "C_1": 5, "C_3": 5, "C_5": 5, "C_6": 5},
     output_wcs=["C_x", "C_y", "C_3", "C_1", "C_6", "C_5"],
     output_iops=[],
 )

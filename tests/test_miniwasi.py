@@ -7,7 +7,7 @@ import pytest
 
 from miniwasi import MiniWasi, ImageProcessor, BatchImageProcessor
 
-NAMES = ['C_x', 'C_mie', 'C_y'] + [f'C_{i}' for i in range(8)]
+NAMES = ['C_x', 'C_mie', 'C_y'] + [f'C_{i}' for i in range(7)]
 WL = np.arange(400, 800, 5.0)
 
 
@@ -100,11 +100,12 @@ def test_image_processor(tmp_path, model):
     assert res.shape == (3, 4, 3 + 1 + WL.size + 1)       # C_3, C_x, C_y, C_phy, a_phy, residual
     assert np.all(np.isnan(res[0, 0])) and not p.valid[0, 0]        # no valid input: NaN
     np.testing.assert_allclose(res[..., 0].ravel()[1:], P["C_3"][1:], rtol=1e-4)   # bands sorted: C_3, C_x, C_y
-    # C_phy = sum of C_0..C_7 (here only C_3 is non-zero)
+    # C_phy = sum of C_0..C_6 (here only C_3 is non-zero)
     np.testing.assert_allclose(res[..., 3], res[..., 0], rtol=1e-6)
     assert (tmp_path / "out.bsq").exists()
     hdr = envi.read_envi_header(str(tmp_path / "out.hdr"))
     assert hdr["band names"][:4] == ["C_3", "C_x", "C_y", "C_phy"]
+    assert hdr["siop resampling"] == "wasi"
 
     # reusing a model gives the same result (no SIOP reload); geometry comes from the header
     shared = MiniWasi(wavelengths=WL, FWHMs=np.full(WL.size, 5.0), sza=10, va=40, T=14)
@@ -184,9 +185,34 @@ def test_wasi_files():
     for name in (resampling.WATER, resampling.DAW_DT, resampling.BB_PHY_NORM, resampling.CDOM_NORM) + resampling.PHYTO:
         wl, v = resampling.read_spectrum(name)
         assert wl.size > 100 and np.all(np.isfinite(v)), name
-    for name in ("CYANO_PC.A", "DINOFLAGELLATES_GSANQUINEUM.A"):
+    for name in ("CYANO_PC.A",):
         raw = (resampling.data_dir / name).read_bytes()
         raw.decode("latin-1")
         assert b"\r\n" in raw and b"\n\n" not in raw.replace(b"\r\n", b"\n")[-3:]
     a = MiniWasi(wavelengths=WL).a_i_spec_res
-    assert a.shape == (WL.size, 8) and np.all(np.isfinite(a))
+    assert a.shape == (WL.size, 7) and np.all(np.isfinite(a))
+
+
+def test_resampling_wasi():
+    """Gaussian resampling as WASI resample_Gauss: written out here with WASI's loop."""
+    from miniwasi import resampling
+    wl, y = resampling.read_spectrum(resampling.WATER)
+    centres, fwhm = np.array([442.5, 560.0, 681.25]), np.array([10.0, 10.0, 7.5])
+    expected = []
+    for c, f in zip(centres, fwhm):
+        s, yy = f / 2.35, 0.0
+        for i in range(wl.size):
+            if abs(wl[i] - c) < 3 / 2.35 * f:
+                dy = abs(wl[i] - wl[i - 1]) if i > 0 else abs(wl[1] - wl[0])
+                yy += y[i] * 1.0025 / s / np.sqrt(2 * np.pi) * np.exp(-0.5 * ((wl[i] - c) / s) ** 2) * dy
+        expected.append(yy)
+    np.testing.assert_allclose(resampling.resample(resampling.WATER, centres, fwhm), expected, rtol=1e-12)
+    # the old method is still available and close to it
+    old = resampling.resample(resampling.WATER, centres, fwhm, method="bandresampler")
+    np.testing.assert_allclose(old, expected, rtol=0.05)
+    assert MiniWasi(wavelengths=centres, FWHMs=fwhm, resampling="bandresampler").resampling == "bandresampler"
+    with pytest.raises(ValueError):
+        resampling.resample(resampling.WATER, centres, fwhm, method="boxcar")
+    # window not covered by the file: NaN (phytoplankton: 0 outside the file instead)
+    assert np.isnan(resampling.resample(resampling.BB_PHY_NORM, [352.0], [10.0]))
+    assert np.isfinite(resampling.resample_phyto(np.array([352.0, 900.0]), 10.0)).all()

@@ -9,7 +9,7 @@ from spectral import envi
 from .MiniWASI import MiniWasi
 
 IOP_NAMES = ("a", "a_cdom", "a_nap", "a_phy", "bb", "bb_nap", "bb_phy")
-UNITS = {**{f"C_{i}": "µg/L" for i in range(8)}, "C_phy": "µg/L", "C_x": "mg/L", "C_mie": "mg/L",
+UNITS = {**{f"C_{i}": "µg/L" for i in range(7)}, "C_phy": "µg/L", "C_x": "mg/L", "C_mie": "mg/L",
          "C_y": "1/m"}
 
 
@@ -117,7 +117,7 @@ class ImageProcessor():
             for k, name in enumerate(self.output_wcs):
                 out_valid[:, k] = self.fit["params"][name]
             # total phytoplankton: sum of all classes (fixed ones at their init value)
-            out_valid[:, n_wcs] = sum(self.fit["params"][f"C_{i}"] for i in range(8))
+            out_valid[:, n_wcs] = sum(self.fit["params"][f"C_{i}"] for i in range(7))
             if self.output_iops:
                 # forward() with the fitted concentrations sets the IOPs, shape (n_valid, L)
                 self.model.forward(**self.fit["params"])
@@ -157,6 +157,7 @@ class ImageProcessor():
         }
         out_hdr["processing date"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
         out_hdr["miniwasi version"] = pkg_version
+        out_hdr["siop resampling"] = self.model.resampling
         out_hdr["processing time total (s)"] = round(t_total, 3)
         out_hdr["processing time inversion (s)"] = round(t_inv, 3)
         out_hdr["valid pixels"] = n_valid

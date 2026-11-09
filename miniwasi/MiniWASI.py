@@ -1,6 +1,6 @@
 import copy
 import numpy as np
-from . import resampling
+from . import resampling as _siop      # module; 'resampling' is also an argument of MiniWasi
 import warnings
 from tqdm import tqdm
 from joblib import Parallel, delayed
@@ -13,11 +13,13 @@ class MiniWasi():
 
     def __init__(self, wavelengths = np.arange(400,900), FWHMs = None,
                  T=20, va=0.0001, sza=40,
-                 bb_nap_spec=0.0086, a_spec_nap_440nm=0.041, bb_phy_spec=0.001, s_cdom=0.014, s_nap=0.011, n=-1,
-                 a_norm_y_from_file = False
+                 bb_nap_spec=0.0086, a_spec_nap_440nm=0.041, bb_phy_spec=0.001, 
+                 s_cdom=0.014, s_nap=0.011, n=-1, b=0.00111,
+                 a_norm_y_from_file = False, resampling = "wasi"
                  ):
 
         self.wavelengths = np.asarray(wavelengths, dtype=float)
+        self.resampling = resampling
 
         self.bb_nap_spec = bb_nap_spec
         self.a_spec_nap_440nm = a_spec_nap_440nm
@@ -25,28 +27,31 @@ class MiniWasi():
         self.s_cdom = s_cdom
         self.s_nap = s_nap
         self.n = n
+        self.b = b
 
         # SIOPs and water data from the WASI7 files in miniwasi/data (see resampling.py),
         # resampled to the sensor bands
         # Normalized CDOM absorption (1 at 440 nm): file (Gaussian model) or exponential
-        self.a_norm_y = (resampling.resample(resampling.CDOM_NORM, self.wavelengths, FWHMs) if a_norm_y_from_file
+        method = self.resampling
+        self.a_norm_y = (_siop.resample(_siop.CDOM_NORM, self.wavelengths, FWHMs, method=method)
+                         if a_norm_y_from_file
                          else np.exp(-self.s_cdom*(self.wavelengths-440)))
 
         # Normalized NAP absorption (1 at 440 nm)
         self.a_norm_nap = np.exp(-self.s_nap*(self.wavelengths-440))
 
         # Absorption of pure water at 20 degC
-        self.a_w_res = resampling.resample(resampling.WATER, self.wavelengths, FWHMs)
-        # Specific absorption of the 8 phytoplankton classes C_0 ... C_7 (resampling.PHYTO):
-        # 6 WASI7 classes + CYANO_PC + DINOFLAGELLATES_GSANQUINEUM; shape (L, 8)
-        self.a_i_spec_res = resampling.resample_phyto(self.wavelengths, FWHMs)
+        self.a_w_res = _siop.resample(_siop.WATER, self.wavelengths, FWHMs, method=method)
+        # Specific absorption of the 7 phytoplankton classes C_0 ... C_6 (resampling.py, PHYTO):
+        # 6 WASI7 classes + CYANO_PC; shape (L, 7)
+        self.a_i_spec_res = _siop.resample_phyto(self.wavelengths, FWHMs, method=method)
         # Normalized backscattering of phytoplankton
-        self.bb_phy_norm_res = resampling.resample(resampling.BB_PHY_NORM, self.wavelengths, FWHMs)
+        self.bb_phy_norm_res = _siop.resample(_siop.BB_PHY_NORM, self.wavelengths, FWHMs, method=method)
         # Temperature gradient of pure water absorption
-        self.da_W_div_dT_res = resampling.resample(resampling.DAW_DT, self.wavelengths, FWHMs)
+        self.da_W_div_dT_res = _siop.resample(_siop.DAW_DT, self.wavelengths, FWHMs, method=method)
 
-        # Backscattering of water
-        self.bb_w = 0.00111 * (self.wavelengths/500)**(-4.32)
+        # Backscattering of water: b is salinity-dependent
+        self.bb_w = self.b * (self.wavelengths/500)**(-4.32)
 
         # Derivatives of a and bb with respect to each concentration.
         # The model is linear in all C_* at the IOP level, so these are constant spectra.
@@ -54,9 +59,9 @@ class MiniWasi():
         bb_phy_unit = self.bb_phy_spec * self.bb_phy_norm_res
         self.da_dC = {'C_x': a_nap_unit, 'C_mie': a_nap_unit, 'C_y': self.a_norm_y}
         self.dbb_dC = {'C_x': self.bb_nap_spec * np.ones(self.wavelengths.shape),
-                       'C_mie': 0.0042 * (self.wavelengths / 500)**self.n,
+                       'C_mie': self.bb_nap_spec * (self.wavelengths / 500)**self.n,
                        'C_y': np.zeros(self.wavelengths.shape)}
-        for i in range(8):
+        for i in range(7):
             self.da_dC[f'C_{i}'] = self.a_i_spec_res[:, i]
             self.dbb_dC[f'C_{i}'] = bb_phy_unit
 
@@ -127,7 +132,7 @@ class MiniWasi():
 
 
     def forward(self, C_x = 1, C_mie = 0, C_y = 0.2, C_0 = 2, C_1 = 0, C_2 = 0, C_3 = 0, C_4 = 0, C_5 = 0,
-                C_6 = 0, C_7 = 0, obs=None):
+                C_6 = 0, obs=None):
         """
         Every C_* may be a scalar or an array of shape (N,). With scalars all outputs have
         shape (L,), otherwise (N, L), i.e. (number of spectra, number of bands).
@@ -136,9 +141,9 @@ class MiniWasi():
         """
 
         # Concentrations as columns so that they broadcast against wavelengths
-        C_x, C_mie, C_y, C_0, C_1, C_2, C_3, C_4, C_5, C_6, C_7 = (
+        C_x, C_mie, C_y, C_0, C_1, C_2, C_3, C_4, C_5, C_6 = (
             np.asarray(C, dtype=float)[..., None] if np.ndim(C) > 0 else C
-            for C in (C_x, C_mie, C_y, C_0, C_1, C_2, C_3, C_4, C_5, C_6, C_7))
+            for C in (C_x, C_mie, C_y, C_0, C_1, C_2, C_3, C_4, C_5, C_6))
 
         T = self._per_obs(self.T, obs)
         inwater_va = self._per_obs(self.inwater_va, obs)
@@ -156,8 +161,8 @@ class MiniWasi():
         self.a_cdom = C_y * self.a_norm_y
 
         # Phytoplankton component
-        self.a_phy = C_0*self.a_i_spec_res[:,0] + C_1*self.a_i_spec_res[:,1] + C_2*self.a_i_spec_res[:,2] + C_3*self.a_i_spec_res[:,3] + C_4*self.a_i_spec_res[:,4] + C_5*self.a_i_spec_res[:,5] + C_6*self.a_i_spec_res[:,6] + C_7*self.a_i_spec_res[:,7]
-        C_phy = C_0 + C_1 + C_2 + C_3 + C_4 + C_5 + C_6 + C_7
+        self.a_phy = C_0*self.a_i_spec_res[:,0] + C_1*self.a_i_spec_res[:,1] + C_2*self.a_i_spec_res[:,2] + C_3*self.a_i_spec_res[:,3] + C_4*self.a_i_spec_res[:,4] + C_5*self.a_i_spec_res[:,5] + C_6*self.a_i_spec_res[:,6]
+        C_phy = C_0 + C_1 + C_2 + C_3 + C_4 + C_5 + C_6
 
         # NAP component
         # Normalized nap absorption coefficient
@@ -179,7 +184,7 @@ class MiniWasi():
 
         # NAP
         # WASI bb_nap_spec: 0.013, WASI manual: 0.0086
-        self.bb_nap = self.bb_nap_spec * C_x * np.ones(self.wavelengths.shape) + 0.0042 * C_mie * (self.wavelengths / 500)**self.n
+        self.bb_nap = self.bb_nap_spec * C_x * np.ones(self.wavelengths.shape) + self.bb_nap_spec * C_mie * (self.wavelengths / 500)**self.n
 
         self.bb_wc = self.bb_phy + self.bb_nap
         # Bulk backscattering
@@ -257,7 +262,7 @@ class MiniWasi():
                       there is more than one block, i.e. N > block_size).
 
         Returns a dict (floats for one spectrum, arrays of shape (N,) for many):
-            result['params']   {name: value} for all 11 parameters (fixed ones at init),
+            result['params']   {name: value} for all 10 parameters (fixed ones at init),
                                so model.forward(**result['params']) gives the fitted IOPs/Rrs
             result['stderr']   {name: standard error} for the fitted parameters
                                (NaN if the parameter ended on a bound)
@@ -272,7 +277,7 @@ class MiniWasi():
         """
 
         # defaults
-        param_names = ['C_x', 'C_mie', 'C_y', 'C_0', 'C_1', 'C_2', 'C_3', 'C_4', 'C_5', 'C_6', 'C_7']
+        param_names = ['C_x', 'C_mie', 'C_y', 'C_0', 'C_1', 'C_2', 'C_3', 'C_4', 'C_5', 'C_6']
 
         default_init = {
             'C_x': 1.0,
@@ -285,7 +290,6 @@ class MiniWasi():
             'C_4': 0.0,
             'C_5': 0.0,
             'C_6': 0.0,
-            'C_7': 0.0,
         }
 
         default_bounds = {
@@ -299,7 +303,6 @@ class MiniWasi():
             'C_4': (0, 50),
             'C_5': (0, 50),
             'C_6': (0, 50),
-            'C_7': (0, 50),
         }
 
         # spectra
@@ -405,12 +408,12 @@ class MiniWasi():
             Rrs = self.forward(**C, obs=obs[rows])
             return Rrs - Rrs_measured[rows], self.jacobian(free)
 
-        values = np.tile(start, (N, 1))
+        values = np.tile(start, (N, 1)) # p₀ for every pixel, shape (N, 4): (1, 0.1, 1, 1)
         with np.errstate(all="ignore"):
-            res, J = model(values, np.arange(N))
+            res, J = model(values, np.arange(N)) # r = R_rs,model − R_rs,measured (N, 6);  J (N, 6, 4)
             cost = np.sum(weights * res**2, axis=1)
-        mu = np.full(N, 1e-3)
-        active = self._finite_rows(cost, J)      # non-finite start: nothing to fit, reported as NaN
+        mu = np.full(N, 1e-3) # one damping factor μ per pixel
+        active = self._finite_rows(cost, J) # pixels still being fitted (non-finite start: nothing to fit, reported as NaN)
         n_iter = np.zeros(N, dtype=int)
 
         for _ in range(max_iter):
@@ -419,12 +422,13 @@ class MiniWasi():
                 break
             n_iter[rows] += 1
 
-            # Normal equations
-            JW = J[rows] * weights[:, None]
-            H = np.einsum('nlp,nlq->npq', JW, J[rows])
-            g = np.einsum('nlp,nl->np', JW, res[rows])
+                        # Normal equations
+            WJ = J[rows] * weights[:, None]               # (n, L, P): row λ of J times w_λ, i.e. the matrix product W J with W = diag(w)
+            H = np.einsum('nlp,nlq->npq', WJ, J[rows])    # (n, P, P): JᵀWJ
+            g = np.einsum('nlp,nl->np', WJ, res[rows])    # (n, P): JᵀWr
 
             # Hold parameters fixed that sit on a bound and want to go further out
+            # (row/column k of H set to 0, H_kk = 1, g_k = 0  ->  Δp_k = 0)
             on_bound = ((values[rows] <= lower) & (g > 0)) | ((values[rows] >= upper) & (g < 0))
             if on_bound.any():
                 free_mask = (~on_bound).astype(float)
@@ -432,9 +436,10 @@ class MiniWasi():
                 g = g * free_mask
 
             # Damped step, clipped to the bounds
-            damping = mu[rows, None] * np.maximum(np.einsum('npp->np', H), 1e-30)
-            step = self._safe_solve(H + damping[:, :, None] * identity, -g)
-            new_values = np.clip(values[rows] + step, lower, upper)
+            damping = mu[rows, None] * np.maximum(np.einsum('npp->np', H), 1e-30)    # (n, P): μ·H_kk, the diagonal of μ·diag(H)
+            step = self._safe_solve(H + damping[:, :, None] * identity, -g)          # solves (H + μ·diag(H)) Δp = -g,
+                                                                                     # i.e. (JᵀWJ + μ·diag(JᵀWJ)) Δp = -JᵀWr
+            new_values = np.clip(values[rows] + step, lower, upper)                  # p + Δp, kept inside the bounds
 
             with np.errstate(all="ignore"):
                 new_res, new_J = model(new_values, rows)
