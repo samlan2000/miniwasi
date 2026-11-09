@@ -131,7 +131,7 @@ class MiniWasi():
         return x[:, None]
 
 
-    def forward(self, C_x = 1, C_mie = 0, C_y = 0.2, C_0 = 2, C_1 = 0, C_2 = 0, C_3 = 0, C_4 = 0, C_5 = 0,
+    def forward(self, C_x = 0, C_mie = 0, C_y = 0, C_0 = 0, C_1 = 0, C_2 = 0, C_3 = 0, C_4 = 0, C_5 = 0,
                 C_6 = 0, obs=None):
         """
         Every C_* may be a scalar or an array of shape (N,). With scalars all outputs have
@@ -280,10 +280,10 @@ class MiniWasi():
         param_names = ['C_x', 'C_mie', 'C_y', 'C_0', 'C_1', 'C_2', 'C_3', 'C_4', 'C_5', 'C_6']
 
         default_init = {
-            'C_x': 1.0,
-            'C_mie': 0,
-            'C_y': 0.1,
-            'C_0': 4.0,
+            'C_x': 0.0,
+            'C_mie': 0.0,
+            'C_y': 0.0,
+            'C_0': 0.0,
             'C_1': 0.0,
             'C_2': 0.0,
             'C_3': 0.0,
