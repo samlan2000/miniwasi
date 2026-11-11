@@ -1,14 +1,16 @@
 [build-system]
-requires = ["setuptools>=64"]
+requires = ["setuptools>=77"]      # SPDX "license" and "license-files"
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "miniwasi"
-version = "0.4.0"
+version = "0.5.0"
 description = "Vectorised WASI-type bio-optical model with batched Levenberg-Marquardt inversion for Rrs spectra and ENVI images"
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [{ name = "Samuel Landolt" }]
+license = "MIT"                       # code; the data in miniwasi/data keep their own terms
+license-files = ["LICENSE", "miniwasi/data/LICENSE_DATA.txt"]
 dependencies = [
     "numpy",
     "pandas",

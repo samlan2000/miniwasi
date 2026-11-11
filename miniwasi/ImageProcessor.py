@@ -21,13 +21,18 @@ class ImageProcessor():
 
     def __init__(self, img_path, out_path, weights=None, vary=None, bounds=None,
                  init=None, output_wcs=None, output_iops=None, siops=None,
-                 block_size=2000, n_jobs=-1, progress=True, model=None):
+                 block_size=2000, n_jobs=-1, progress=True, model=None, sza=None, vza=None):
+        """
+        sza, vza: sun zenith and viewing (zenith) angle [deg]. None (default): read from the ENVI
+                 header ("sza", "vza"); if missing there, sza = 30 and vza = 0 are used with a
+                 warning. A given value overrides the header.
+        """
 
         self.img_path = img_path
         self.out_path = out_path
         self.weights = weights
         self.vary = dict(vary or {"C_0": True, "C_x": True, "C_y": True})
-        self.bounds = dict(bounds or {"C_y": (0, 1), "C_0": (0, 15), "C_x": (0, 50)})
+        self.bounds = dict(bounds or {"C_y": (0, 10), "C_0": (0, 100), "C_x": (0, 50)})
         self.init = dict(init or {"C_y": 0.1, "C_0": 3, "C_x": 1})
         # C_phy is always written (after the concentrations), so it is not listed here
         self.output_wcs = sorted(set(output_wcs or ["C_0", "C_x", "C_y"]) - {"C_phy"})
@@ -40,6 +45,7 @@ class ImageProcessor():
             raise ValueError("With model=..., siops may only contain 'T'; set "
                              f"{sorted(set(self.siops) - {'T'})} when creating the model.")
         self.model_in = model
+        self.sza, self.vza = sza, vza
         self.block_size = block_size
         self.n_jobs = n_jobs
         self.progress = progress
@@ -59,8 +65,20 @@ class ImageProcessor():
         header = envi.read_envi_header(hdr_path)
         wavelengths = np.array([float(w) for w in header["wavelength"]])
         FWHMs = np.array([float(w) for w in header["fwhm"]])
-        sza = float(header["sza"][0])
-        vza = float(header["vza"][0])
+        # geometry [deg]: given value, else ENVI header ("sza = 31" or "sza = {31}"), else default
+        self.defaulted = []                 # angles for which the default was used
+        self.angles = angles = {}
+        for key, given, default in (("sza", self.sza, 30.0), ("vza", self.vza, 0.0)):
+            if given is not None:
+                angles[key] = float(given)
+            elif key in header:
+                value = header[key][0] if isinstance(header[key], list) else header[key]
+                angles[key] = float(value.strip("{} "))
+            else:
+                angles[key] = default
+                self.defaulted.append(key)
+                warnings.warn(f"{self.img_path}: '{key}' neither given nor in the header; using {default:g} deg.")
+        sza, vza = angles["sza"], angles["vza"]
 
         with warnings.catch_warnings():     # NaN outside the lake is expected
             warnings.filterwarnings("ignore", "Image data contains NaN values.")
@@ -71,7 +89,7 @@ class ImageProcessor():
         # Create WASI object
         # -------------------------------------------------
         if self.model_in is None:
-            self.model = MiniWasi(wavelengths=wavelengths, FWHMs=FWHMs, va=vza, sza=sza, **self.siops)
+            self.model = MiniWasi(wavelengths=wavelengths, FWHMs=FWHMs, vza=vza, sza=sza, **self.siops)
         else:
             # reuse the model (SIOPs already resampled): only update geometry / temperature
             self.model = self.model_in
@@ -79,7 +97,7 @@ class ImageProcessor():
                     or not np.allclose(self.model.wavelengths, wavelengths)):
                 raise ValueError(f"model wavelengths {self.model.wavelengths} do not match the image "
                                  f"wavelengths {wavelengths} ({self.img_path}).")
-            self.model.set_conditions(sza=sza, va=vza, T=self.siops.get("T"))
+            self.model.set_conditions(sza=sza, vza=vza, T=self.siops.get("T"))
 
         # fitted concentrations + C_phy + one spectrum per IOP + residual band
         n_wcs = len(self.output_wcs)
@@ -165,6 +183,8 @@ class ImageProcessor():
         out_hdr["pixels not converged"] = n_not_converged
         out_hdr["pixels failed"] = n_failed
         out_hdr["n_jobs"] = self.n_jobs
+        out_hdr["sza"] = [sza]              # angles used for the inversion
+        out_hdr["vza"] = [vza]
 
         # -------------------------------------------------
         # Write ENVI BSQ

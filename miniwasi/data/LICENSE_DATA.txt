@@ -1,0 +1,30 @@
+Data files in miniwasi/data
+===========================
+
+The MIT license of miniwasi (file LICENSE in the repository root) covers the code only. It does
+not cover the spectra in this folder, which keep the terms of their original sources:
+
+WASI7 database files
+    WATER.A, daWdT.txt, PHYTO.A, CRYPTO.A, CYANO_PE.A, DIA.A, DINOFLAGELLATES.A,
+    DINOFLAGELLATES_GSANQUINEUM.A, GREEN_ALGAE.A, Phyto.bN, Y_Gauss.aN,
+    and the WASI7 forward spectra in tests/ (*.FWD)
+
+    (c) Peter Gege, DLR Remote Sensing Technology Institute, Oberpfaffenhofen, Germany.
+    Taken unchanged from the database of the Water Colour Simulator WASI 7 and redistributed
+    under the WASI7 terms:
+      - free of charge, no warranty, no user support;
+      - commercial distribution is not allowed;
+      - commercial use is not allowed unless an agreement with the author is made;
+      - publication of results obtained with these data requires to quote the use of WASI,
+        cite a recent publication about WASI, and inform Peter Gege.
+    The original sources of each spectrum (e.g. Pope & Fry 1997 for pure water absorption) are
+    given in the file headers.
+
+    Reference: Gege, P. (2021). The Water Colour Simulator WASI. User manual for WASI version 6.
+    DLR internal report IB 564-02/2021.
+
+CYANO_PC.A
+    Specific absorption of PC-pigmented cyanobacteria (Microcystis aeruginosa) from
+    Wojtasiewicz, B. (2016), Bio-optical characterization of selected cyanobacteria strains
+    present in marine and freshwater ecosystems (see file header); Savitzky-Golay smoothed.
+    Please cite the original publication when using it.

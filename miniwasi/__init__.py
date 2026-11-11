@@ -10,5 +10,5 @@ from .MiniWASI import MiniWasi
 from .ImageProcessor import ImageProcessor
 from .BatchImageProcessor import BatchImageProcessor
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 __all__ = ["MiniWasi", "ImageProcessor", "BatchImageProcessor"]

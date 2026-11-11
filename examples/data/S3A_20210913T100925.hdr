@@ -1,0 +1,38 @@
+ENVI
+description = {
+D:\bsq_lakes\geneva\S3A_20210913T100925.part.bsq}
+samples = 217
+lines   = 119
+bands   = 10
+header offset = 0
+file type = ENVI Standard
+data type = 4
+interleave = bsq
+byte order = 0
+map info = {Geographic Lat/Lon, 1, 1, 6.13958585996949, 46.5218706158583, 0.0036996346173315, 0.00269817277179021,WGS-84}
+coordinate system string = {GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]}
+band names = {
+Band 1,
+Band 2,
+Band 3,
+Band 4,
+Band 5,
+Band 6,
+Band 7,
+Band 8,
+Band 9,
+Band 10}
+
+wavelength units = Nanometers
+wavelength = {
+400, 412.5, 442.5, 490, 510, 560, 620, 665, 681.25, 708.75}
+
+fwhm = {
+15, 10, 10, 10, 10, 10, 10, 10, 7.5, 10}
+
+sza = {
+46.0584}
+
+vza = {
+1.3141035}
+

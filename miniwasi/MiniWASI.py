@@ -12,22 +12,32 @@ class MiniWasi():
     """
 
     def __init__(self, wavelengths = np.arange(400,900), FWHMs = None,
-                 T=20, va=0.0001, sza=40,
-                 bb_nap_spec=0.0086, a_spec_nap_440nm=0.041, bb_phy_spec=0.001, 
+                 T=20, vza=0.0001, sza=40,
+                 bb_nap_spec=0.0086, bb_mie_spec=0.0042, a_spec_nap_440nm=0.041, bb_phy_spec=0.001, 
                  s_cdom=0.014, s_nap=0.011, n=-1, b=0.00111,
-                 a_norm_y_from_file = False, resampling = "wasi"
+                 a_norm_y_from_file = False, resampling = "bandresampler", sigma_Lu = 0.02
                  ):
 
         self.wavelengths = np.asarray(wavelengths, dtype=float)
         self.resampling = resampling
 
-        self.bb_nap_spec = bb_nap_spec
+        self.bb_nap_spec = bb_nap_spec      # specific backscattering of NAP Type I, C_x (WASI bb_X)
+        self.bb_mie_spec = bb_mie_spec      # specific backscattering of NAP Type II, C_mie, at 500 nm (WASI bb_Mie)
         self.a_spec_nap_440nm = a_spec_nap_440nm
         self.bb_phy_spec=bb_phy_spec
         self.s_cdom = s_cdom
         self.s_nap = s_nap
         self.n = n
         self.b = b
+        # Reflection factor for upwelling radiance at the water surface (WASI: sigma_Lu, sigma_L^-),
+        # used in R_rs = (1 - sigma_Ed)(1 - sigma_Lu)/n_W^2 * ...:
+        #   a number (scalar or one value per observation; WASI default: constant 0.02), or
+        #   "fresnel": Fresnel reflectance at the viewing angle (Eq. 2.24 of the WASI7 manual),
+        #              recomputed in set_conditions() whenever vza changes.
+        # The user setting is kept separately from the value in use (self.sigma_Lu).
+        if isinstance(sigma_Lu, str) and sigma_Lu != "fresnel":
+            raise ValueError(f'sigma_Lu must be a number or "fresnel", not {sigma_Lu!r}.')
+        self._sigma_Lu_setting = sigma_Lu
 
         # SIOPs and water data from the WASI7 files in miniwasi/data (see resampling.py),
         # resampled to the sensor bands
@@ -59,17 +69,17 @@ class MiniWasi():
         bb_phy_unit = self.bb_phy_spec * self.bb_phy_norm_res
         self.da_dC = {'C_x': a_nap_unit, 'C_mie': a_nap_unit, 'C_y': self.a_norm_y}
         self.dbb_dC = {'C_x': self.bb_nap_spec * np.ones(self.wavelengths.shape),
-                       'C_mie': self.bb_nap_spec * (self.wavelengths / 500)**self.n,
+                       'C_mie': self.bb_mie_spec * (self.wavelengths / 500)**self.n,
                        'C_y': np.zeros(self.wavelengths.shape)}
         for i in range(7):
             self.da_dC[f'C_{i}'] = self.a_i_spec_res[:, i]
             self.dbb_dC[f'C_{i}'] = bb_phy_unit
 
         # Geometry- and temperature-dependent constants
-        self.set_conditions(T=T, va=va, sza=sza)
+        self.set_conditions(T=T, vza=vza, sza=sza)
 
 
-    def set_conditions(self, T=None, va=None, sza=None):
+    def set_conditions(self, T=None, vza=None, sza=None):
         """
         Set water temperature [degC], viewing angle and sun zenith angle [deg].
         Each may be a scalar or an array of shape (N,) (one value per observation).
@@ -77,26 +87,29 @@ class MiniWasi():
         """
         if T is not None:
             self.T = np.asarray(T, dtype=float)
-        if va is not None:
-            va = np.asarray(va, dtype=float)
-            self.va = np.radians(np.where(va != 0, va, 0.0001))  # avoid division by zero
+        if vza is not None:
+            vza = np.asarray(vza, dtype=float)
+            self.vza = np.radians(np.where(vza != 0, vza, 0.0001))  # avoid division by zero
         if sza is not None:
             self.sza = np.radians(np.asarray(sza, dtype=float))
 
         # Viewing angle in water
-        self.inwater_va = np.arcsin(np.sin(self.va)/1.33)
+        self.inwater_vza = np.arcsin(np.sin(self.vza)/1.33)
         # Sun zenith angle in water
         self.inwater_sza = np.arcsin(np.sin(self.sza)/1.33)
-        # Fresnel reflectance at the air–water interface
-        num_sin = np.sin(self.va - self.inwater_va) ** 2
-        den_sin = np.sin(self.va + self.inwater_va) ** 2
-        num_tan = np.tan(self.va - self.inwater_va) ** 2
-        den_tan = np.tan(self.va + self.inwater_va) ** 2
-        self.rho_L = 0.5 * (num_sin / den_sin + num_tan / den_tan) # ca. 0.02 (nadir)
+        # Reflection factor for upwelling radiance at the air–water interface
+        if isinstance(self._sigma_Lu_setting, str):     # "fresnel": Fresnel reflectance at the viewing angle
+            num_sin = np.sin(self.vza - self.inwater_vza) ** 2
+            den_sin = np.sin(self.vza + self.inwater_vza) ** 2
+            num_tan = np.tan(self.vza - self.inwater_vza) ** 2
+            den_tan = np.tan(self.vza + self.inwater_vza) ** 2
+            self.sigma_Lu = 0.5 * (num_sin / den_sin + num_tan / den_tan) # ca. 0.02 (nadir)
+        else:
+            self.sigma_Lu = np.asarray(self._sigma_Lu_setting, dtype=float)
 
-        sizes = {np.size(x) for x in (self.T, self.va, self.sza)} - {1}
+        sizes = {np.size(x) for x in (self.T, self.vza, self.sza, self.sigma_Lu)} - {1}
         if len(sizes) > 1:
-            raise ValueError("T, va and sza must be scalars or arrays of the same length.")
+            raise ValueError("T, vza, sza and sigma_Lu must be scalars or arrays of the same length.")
         self.n_obs = sizes.pop() if sizes else None   # None = shared by all spectra
 
 
@@ -137,7 +150,7 @@ class MiniWasi():
         Every C_* may be a scalar or an array of shape (N,). With scalars all outputs have
         shape (L,), otherwise (N, L), i.e. (number of spectra, number of bands).
         obs: only needed with per-observation conditions; indices of the observations
-             (entries of T/va/sza) that the N spectra belong to. Default: all of them.
+             (entries of T/vza/sza) that the N spectra belong to. Default: all of them.
         """
 
         # Concentrations as columns so that they broadcast against wavelengths
@@ -146,9 +159,9 @@ class MiniWasi():
             for C in (C_x, C_mie, C_y, C_0, C_1, C_2, C_3, C_4, C_5, C_6))
 
         T = self._per_obs(self.T, obs)
-        inwater_va = self._per_obs(self.inwater_va, obs)
+        inwater_vza = self._per_obs(self.inwater_vza, obs)
         inwater_sza = self._per_obs(self.inwater_sza, obs)
-        rho_L = self._per_obs(self.rho_L, obs)
+        sigma_Lu = self._per_obs(self.sigma_Lu, obs)
 
         ####
         # Relate IOPs to LUTs
@@ -183,8 +196,9 @@ class MiniWasi():
         self.bb_phy = C_phy * self.bb_phy_spec * self.bb_phy_norm_res
 
         # NAP
-        # WASI bb_nap_spec: 0.013, WASI manual: 0.0086
-        self.bb_nap = self.bb_nap_spec * C_x * np.ones(self.wavelengths.shape) + self.bb_nap_spec * C_mie * (self.wavelengths / 500)**self.n
+        # Type I (C_x): bb_nap_spec, spectrally flat (WASI bb_X = 0.0086, X.bN = 1);
+        # Type II (C_mie): bb_mie_spec * (lambda/500)^n (WASI bb_Mie = 0.0042, Lambda_S = 500 nm)
+        self.bb_nap = self.bb_nap_spec * C_x * np.ones(self.wavelengths.shape) + self.bb_mie_spec * C_mie * (self.wavelengths / 500)**self.n
 
         self.bb_wc = self.bb_phy + self.bb_nap
         # Bulk backscattering
@@ -196,7 +210,7 @@ class MiniWasi():
         self.wb = (self.bb/(self.a+self.bb))
 
         # Account for anisotropy (polynomial in wb times a geometry factor)
-        self.f_rs_geometry = 0.0512 * (1 + 0.1098/np.cos(inwater_sza)) * (1 + 0.4021/np.cos(inwater_va))
+        self.f_rs_geometry = 0.0512 * (1 + 0.1098/np.cos(inwater_sza)) * (1 + 0.4021/np.cos(inwater_vza))
         self.f_rs_poly = 1 + 4.6659 * self.wb - 7.8387 * self.wb**2 + 5.4571 * self.wb**3
         f_rs = self.f_rs_geometry * self.f_rs_poly
 
@@ -204,8 +218,9 @@ class MiniWasi():
         self.r_rs_below = f_rs * self.wb
         
         
-        # self.xi = 0.5374 #implemented as such in WASI6; assuming rho_Ed = 0.03, rho_Lu = 0.02, nW = 1.33 with self.xi = (1 - rho_Ed) * (1 - rho_Lu) / nW**2
-        self.xi = (1-0.03)*(1-rho_L)/1.33**2 # ca. 0.53
+        # xi = (1 - sigma_Ed) * (1 - sigma_Lu) / nW**2 with sigma_Ed = 0.03, nW = 1.33 (WASI defaults);
+        # 0.5374 for sigma_Lu = 0.02 (the constant used in WASI6)
+        self.xi = (1-0.03)*(1-sigma_Lu)/1.33**2
 
         self.R_rs = self.xi * (self.r_rs_below/(1-0.54*5*self.r_rs_below))
 
@@ -310,7 +325,7 @@ class MiniWasi():
         Rrs_measured = np.atleast_2d(np.asarray(Rrs_measured, dtype=float))
         N, L = Rrs_measured.shape
         if self.n_obs is not None and self.n_obs != N:
-            raise ValueError(f"{N} spectra but {self.n_obs} observations in T/va/sza.")
+            raise ValueError(f"{N} spectra but {self.n_obs} observations in T/vza/sza.")
 
         # spectral weighting (zero-weight bands are left out of the fit)
         if weights is None:
