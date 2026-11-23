@@ -32,7 +32,7 @@ if __name__ == "__main__":
     for name, kwargs in CONFIGS.items():
         out_dir = HERE / "output" / name
         print(f"\n=== {name} ===")
-        batch = BatchImageProcessor(str(in_dir), str(out_dir), processor_kwargs=kwargs,
+        batch = BatchImageProcessor(str(in_dir), str(out_dir), **kwargs,
                                     skip_existing=False,     # always reprocess (example)
                                     # n_workers: number of images processed at the same time (one
                                     #   process per worker, each image inverted on one core)

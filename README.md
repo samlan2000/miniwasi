@@ -59,17 +59,29 @@ if __name__ == "__main__":
                        weights=[0, 0, 1, 1, 1, 1, 1, 1, 0, 0],
                        vary={"C_x": True, "C_y": True, "C_3": True, "C_5": True},
                        init={"C_x": 1, "C_y": 0.1, "C_3": 5, "C_5": 5},
-                       output_wcs=["C_x", "C_y", "C_3", "C_5"])
+                       output_wcs=["C_x", "C_y", "C_3", "C_5"],
+                       T=12, resampling="bandresampler")     # any MiniWasi argument
     p.run()
     p.plot_results(out_path="fitted/S3A_20210906T095043.png")
 ```
 
-The input is an ENVI BSQ image of R_rs [1/sr]. The header needs `wavelength` and `fwhm`; the sun
-zenith and viewing angle are read from `sza` and `vza` if present, can be given as
-`ImageProcessor(..., sza=..., vza=...)` (overrides the header), and are otherwise set to 30 and 0
-deg with a warning. Pixels with NaN, -9999 or all zeros are skipped. The output image has one
-band per fitted concentration, `C_phy` (sum of all phytoplankton classes) and the fit residual,
+The input is an ENVI image of R_rs [1/sr] (BSQ, BIL or BIP); the output is always written as BSQ. The band centres and
+widths are read from the header (`wavelength`, `fwhm`); for headers without them they can be given as
+`ImageProcessor(..., wavelengths=..., FWHMs=...)` (`FWHMs` may be one number). The header always wins
+(a warning is issued if the given values differ); without any `fwhm`, half the distance to the
+neighbouring bands is used, with a warning. The sun zenith and viewing angle are read from `sza` and `vza` in the header in the same way
+(`ImageProcessor(..., sza=..., vza=...)` is only used for headers without them), and are otherwise
+set to 30 and 0 deg with a warning. Pixels with NaN, -9999 or all zeros are skipped. The output image has one
+band per fitted concentration, `C_phy` (sum of all phytoplankton classes), the fit residual and the relative residual
+(residual / mean R_rs over the fitted bands; e.g. keep pixels with values <= 0.2),
 and the angles and processing information in its header.
+
+`ImageProcessor` takes the `MiniWasi.invert` arguments (`weights`, `vary`, `init`, `bounds`,
+`max_iter`, `tol`, `block_size`, `n_jobs` (default: all cores), `progress`), the output options
+(`output_wcs`, `output_iops`) and, as further keyword arguments, any `MiniWasi` argument (`T`,
+`resampling`, `bb_phy_spec`, `sza`, `vza`, ...). Unknown names
+raise an error. To skip resampling the SIOPs, an existing model can be passed with `model=...`
+(its wavelengths must match the image; only `T`, `sza` and `vza` can then be given).
 
 ### Many images
 
@@ -79,8 +91,8 @@ from miniwasi import BatchImageProcessor
 if __name__ == "__main__":
     BatchImageProcessor(
         "images", "fitted",
-        siops={"T": 12},                    # MiniWasi settings; T is applied per image
-        processor_kwargs=dict(weights=w, vary=..., init=..., output_wcs=[...]),
+        weights=w, vary=..., init=..., output_wcs=[...],   # as ImageProcessor
+        T=12,                               # any MiniWasi argument; T, sza, vza: also {image: value}
         n_workers=8, chunk=25,
     ).run()
 ```
@@ -124,7 +136,7 @@ Colour Simulator WASI, user manual for version 6; sources in the file headers), 
 
 The data files are resampled to the sensor bands as in WASI (Gaussian band response from the
 FWHMs, +- 3 sigma; `resample_Gauss` in WASI 7). `MiniWasi(..., resampling="bandresampler")`
-(or `siops={"resampling": "bandresampler"}` in the image processors) reproduces miniwasi <= 0.3,
+(or `resampling="bandresampler"` in the image processors) reproduces miniwasi <= 0.3,
 which used `spectral.BandResampler` as in the bio_optics package: König, M., Noel, P.,
 Hondula, K.L., Jamalinia, E., Dai, J., Vaughn, N.R., Asner, G.P. (2023),
 https://doi.org/10.5281/zenodo.10246860. The method is written to the output header

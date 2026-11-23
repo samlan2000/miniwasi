@@ -3,6 +3,7 @@ Regression tests for miniwasi (synthetic spectra, plus a comparison with WASI7 f
 in miniwasi/data/tests). Run with:  pytest tests
 """
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -98,9 +99,10 @@ def test_image_processor(tmp_path, model):
                     metadata=meta, force=True)
     # sza/vza/T must match the fixture model for the truth to be recovered
     p = ImageProcessor(str(tmp_path / "in.bsq"), str(tmp_path / "out.bsq"), vary=VARY, init=INIT,
-                       output_wcs=["C_x", "C_y", "C_3"], output_iops=["a_phy"], n_jobs=1, siops={"T": 14})
+                       output_wcs=["C_x", "C_y", "C_3"], output_iops=["a_phy"], n_jobs=1, T=14)
     res = p.run()
-    assert res.shape == (3, 4, 3 + 1 + WL.size + 1)       # C_3, C_x, C_y, C_phy, a_phy, residual
+    assert res.shape == (3, 4, 3 + 1 + WL.size + 2)       # C_3, C_x, C_y, C_phy, a_phy, residual, relative residual
+    np.testing.assert_allclose(res[..., -1], res[..., -2] / cube.mean(axis=2), rtol=1e-5)   # weights=None: all bands
     assert np.all(np.isnan(res[0, 0])) and not p.valid[0, 0]        # no valid input: NaN
     np.testing.assert_allclose(res[..., 0].ravel()[1:], P["C_3"][1:], rtol=1e-4)   # bands sorted: C_3, C_x, C_y
     # C_phy = sum of C_0..C_6 (here only C_3 is non-zero)
@@ -118,7 +120,16 @@ def test_image_processor(tmp_path, model):
     assert p2.model is shared and np.isclose(np.degrees(shared.sza), 35)
 
     with pytest.raises(ValueError):          # other SIOP settings belong to the model
-        ImageProcessor("x.bsq", "y.bsq", model=shared, siops={"T": 14, "s_cdom": 0.02})
+        ImageProcessor("x.bsq", "y.bsq", model=shared, T=14, s_cdom=0.02)
+    with pytest.raises(TypeError, match="unknown argument"):       # typo: not a MiniWasi argument
+        ImageProcessor("x.bsq", "y.bsq", bound={"C_x": (0, 5)})
+    with pytest.raises(TypeError):                                 # keyword-only after out_path
+        ImageProcessor("x.bsq", "y.bsq", [1] * WL.size)
+    # MiniWasi arguments are passed to the model
+    p4 = ImageProcessor(str(tmp_path / "in.bsq"), str(tmp_path / "out4.bsq"), vary=VARY, init=INIT,
+                        n_jobs=1, progress=False, T=14, resampling="bandresampler", s_cdom=0.02)
+    p4.run()
+    assert p4.model.resampling == "bandresampler" and p4.model.s_cdom == 0.02 and float(p4.model.T) == 14
     other = MiniWasi(wavelengths=WL[:-1], T=14)
     with pytest.raises(ValueError):          # wavelengths must match the image
         ImageProcessor(str(tmp_path / "in.bsq"), str(tmp_path / "out3.bsq"), vary=VARY, init=INIT,
@@ -138,8 +149,7 @@ def test_batch_image_processor(tmp_path, model):
                         ext=".bsq", metadata=meta, force=True)
         truths[k] = P["C_3"]
     kw = dict(vary=VARY, init=INIT, output_wcs=["C_x", "C_y", "C_3"])
-    b = BatchImageProcessor(str(tmp_path / "in"), str(tmp_path / "out"), siops={"T": 14},
-                            processor_kwargs=kw, n_workers=1, chunk=2)
+    b = BatchImageProcessor(str(tmp_path / "in"), str(tmp_path / "out"), T=14, **kw, n_workers=1, chunk=2)
     stats = b.run()
     assert stats["images"] == 3 and stats["errors"] == 0 and stats["pixels"] == 18
     for k in range(3):
@@ -151,9 +161,26 @@ def test_batch_image_processor(tmp_path, model):
 
     # resume: nothing left to do; a selected subset is found by name
     assert b.run()["images"] == 0
-    sub = BatchImageProcessor(str(tmp_path / "in"), str(tmp_path / "out_sub"), siops={"T": 14},
-                              processor_kwargs=kw, images=["img1"], n_workers=1)
+    sub = BatchImageProcessor(str(tmp_path / "in"), str(tmp_path / "out_sub"), T=14, **kw,
+                              images=["img1"], n_workers=1)
     assert sub.run()["images"] == 1 and (tmp_path / "out_sub" / "img1.bsq").exists()
+    # T per image: the image with the wrong T is not recovered, the others are (shared model reset)
+    tb = BatchImageProcessor(str(tmp_path / "in"), str(tmp_path / "out_T"), T={"img0": 14, "img1": 30, "img2": 14},
+                             **kw, n_workers=1, chunk=3)
+    assert tb.run()["errors"] == 0
+    for k in range(3):
+        out = np.asarray(envi.open(str(tmp_path / "out_T" / f"img{k}.hdr")).load())[..., 0].ravel()
+        assert np.allclose(out, truths[k], rtol=1e-4) == (k != 1)
+    with pytest.raises(TypeError, match="unknown argument"):
+        BatchImageProcessor("in", "out", n_jobs=4)
+
+
+def test_batch_missing_or_empty_folder(tmp_path):
+    with pytest.raises(FileNotFoundError, match="Input folder not found"):
+        BatchImageProcessor(str(tmp_path / "nope"), str(tmp_path / "out")).run()
+    (tmp_path / "empty").mkdir()
+    with pytest.warns(UserWarning, match="No ENVI images"):
+        assert BatchImageProcessor(str(tmp_path / "empty"), str(tmp_path / "out")).run()["images"] == 0
 
 
 def test_batch_mixed_band_setups(tmp_path):
@@ -173,9 +200,8 @@ def test_batch_mixed_band_setups(tmp_path):
         envi.save_image(str(tmp_path / "in" / f"img{k}.hdr"), cube, dtype=np.float32, interleave="bsq",
                         ext=".bsq", metadata=meta, force=True)
         truths[k] = P["C_3"]
-    b = BatchImageProcessor(str(tmp_path / "in"), str(tmp_path / "out"), siops={"T": 14},
-                            processor_kwargs=dict(vary=VARY, init=INIT, output_wcs=["C_3"]),
-                            n_workers=1, chunk=6)
+    b = BatchImageProcessor(str(tmp_path / "in"), str(tmp_path / "out"), T=14,
+                            vary=VARY, init=INIT, output_wcs=["C_3"], n_workers=1, chunk=6)
     assert b.run()["errors"] == 0
     for k in range(6):
         out = np.asarray(envi.open(str(tmp_path / "out" / f"img{k}.hdr")).load())
@@ -267,7 +293,7 @@ def _write_image(path, meta_extra):
     return str(path.with_suffix(".bsq"))
 
 
-def test_geometry_from_header_argument_default(tmp_path):
+def test_geometry_header_argument_default(tmp_path):
     import warnings
     from spectral import envi
     kw = dict(vary={"C_x": True}, init={"C_x": 1}, output_wcs=["C_x"], n_jobs=1, progress=False)
@@ -281,18 +307,85 @@ def test_geometry_from_header_argument_default(tmp_path):
     (tmp_path / "a.hdr").write_text(hdr_txt)
     p = ImageProcessor(img, str(tmp_path / "a_out.bsq"), **kw); p.run()
     assert p.angles == {"sza": 31.0, "vza": 47.0}
-    # argument overrides the header, no warning
+    # the header wins over given values (warning if they differ, none if they agree)
+    with pytest.warns(UserWarning, match="differs from the header"):
+        p = ImageProcessor(img, str(tmp_path / "a_out.bsq"), sza=20, vza=5, **kw); p.run()
+    assert p.angles == {"sza": 31.0, "vza": 47.0}
+    assert p.angle_source == {"sza": "header (given values differ)", "vza": "header (given values differ)"}
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        p = ImageProcessor(img, str(tmp_path / "a_out.bsq"), sza=20, vza=5, **kw); p.run()
-    assert p.angles == {"sza": 20.0, "vza": 5.0}
+        p = ImageProcessor(img, str(tmp_path / "a_out.bsq"), sza=31, vza=47, **kw); p.run()
+    assert p.angle_source == {"sza": "header", "vza": "header"}
+    # header without angles: the given values are used
+    img_c = _write_image(tmp_path / "c", {})
+    p = ImageProcessor(img_c, str(tmp_path / "c_out.bsq"), sza=20, vza=5, **kw); p.run()
+    assert p.angles == {"sza": 20.0, "vza": 5.0} and p.angle_source == {"sza": "argument", "vza": "argument"}
+    assert envi.read_envi_header(str(tmp_path / "c_out.hdr"))["angle source"] == "sza: argument, vza: argument"
     # missing in the header: defaults with a warning; written to the output header
     img = _write_image(tmp_path / "b", {})
-    with pytest.warns(UserWarning, match="neither given nor in the header"):
+    with pytest.warns(UserWarning, match="neither in the header nor given"):
         p = ImageProcessor(img, str(tmp_path / "b_out.bsq"), **kw); p.run()
     assert p.angles == {"sza": 30.0, "vza": 0.0} and p.defaulted == ["sza", "vza"]
     out = envi.read_envi_header(str(tmp_path / "b_out.hdr"))
     assert float(out["sza"][0]) == 30 and float(out["vza"][0]) == 0
+
+
+def test_bands_header_argument_spacing(tmp_path):
+    import warnings
+    from spectral import envi
+    from spectral.algorithms.resampling import build_fwhm
+    kw = dict(vary={"C_x": True}, init={"C_x": 1}, output_wcs=["C_x"], n_jobs=1, progress=False, sza=35, vza=12)
+    img = _write_image(tmp_path / "a", {})
+    # header has both: given values that agree are fine (no warning) ...
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        p = ImageProcessor(img, str(tmp_path / "a1.bsq"), wavelengths=WL, FWHMs=5, **kw); p.run()
+    assert p.band_source == {"wavelength": "header", "fwhm": "header"}
+    ref = p.results
+    # ... and the header wins over values that differ (warning)
+    with pytest.warns(UserWarning, match="differ from the header"):
+        p = ImageProcessor(img, str(tmp_path / "a2.bsq"), wavelengths=WL + 3, FWHMs=20, **kw)
+        np.testing.assert_array_equal(p.run(), ref)
+    np.testing.assert_allclose(p.model.wavelengths, WL)
+    assert p.band_source["fwhm"] == "header (given values differ)"
+    # header without fwhm: given FWHMs (one value for all bands) gives the same result as the header
+    txt = (tmp_path / "a.hdr").read_text()
+    import re
+    (tmp_path / "a.hdr").write_text(re.sub(r"(?ms)^fwhm = \{.*?\}\n", "", txt))
+    p = ImageProcessor(img, str(tmp_path / "a3.bsq"), FWHMs=5, **kw)
+    np.testing.assert_array_equal(p.run(), ref)
+    assert p.band_source == {"wavelength": "header", "fwhm": "argument"}
+    out = envi.read_envi_header(str(tmp_path / "a3.hdr"))
+    assert out["band source"] == "wavelength: header, fwhm: argument"
+    np.testing.assert_allclose([float(x) for x in out["input fwhm"]], 5)
+    # neither: band spacing, with a warning
+    with pytest.warns(UserWarning, match="no 'fwhm'"):
+        p = ImageProcessor(img, str(tmp_path / "a4.bsq"), **kw); p.run()
+    out = envi.read_envi_header(str(tmp_path / "a4.hdr"))
+    np.testing.assert_allclose([float(x) for x in out["input fwhm"]], build_fwhm(WL))
+    # header without wavelength: given wavelengths; none at all or the wrong number: error
+    (tmp_path / "a.hdr").write_text(re.sub(r"(?ms)^wavelength = \{.*?\}\n", "", (tmp_path / "a.hdr").read_text()))
+    p = ImageProcessor(img, str(tmp_path / "a5.bsq"), wavelengths=WL, FWHMs=5, **kw)
+    np.testing.assert_array_equal(p.run(), ref)
+    with pytest.raises(ValueError, match="no 'wavelength'"):
+        ImageProcessor(img, str(tmp_path / "a6.bsq"), **kw).run()
+    with pytest.raises(ValueError, match="values given for"):
+        ImageProcessor(img, str(tmp_path / "a6.bsq"), wavelengths=WL[:-1], **kw).run()
+
+    # batch: given values for the image without wavelength / fwhm, header for the other one
+    import pandas as pd
+    (tmp_path / "in").mkdir()
+    for f in ("a.hdr", "a.bsq"):
+        (tmp_path / "in" / f).write_bytes((tmp_path / f).read_bytes())
+    _write_image(tmp_path / "in" / "b", {})
+    with pytest.warns(UserWarning, match="2 images had bands or angles"):
+        BatchImageProcessor(str(tmp_path / "in"), str(tmp_path / "out"), wavelengths=WL, FWHMs=5, n_workers=1,
+                            vary={"C_x": True}, init={"C_x": 1}, output_wcs=["C_x"], sza=35, vza=12).run()
+    s = pd.read_csv(tmp_path / "out" / "batch_summary.csv").set_index("image")
+    assert s.loc["a", "input_notes"] == "wavelength=argument fwhm=argument sza=argument vza=argument"
+    assert s.loc["b", "input_notes"] == "sza=argument vza=argument"      # no angles in the header
+    assert s.error.isna().all()
+    np.testing.assert_array_equal(np.asarray(envi.open(str(tmp_path / "out" / "a.hdr")).load()), ref)
 
 
 def test_batch_geometry(tmp_path):
@@ -302,20 +395,60 @@ def test_batch_geometry(tmp_path):
     _write_image(tmp_path / "in" / "without_angles", {})
     kw = dict(vary={"C_x": True}, init={"C_x": 1}, output_wcs=["C_x"])
     with pytest.warns(UserWarning, match="1 images had no sza"):
-        BatchImageProcessor(str(tmp_path / "in"), str(tmp_path / "out"), processor_kwargs=kw, n_workers=1).run()
+        BatchImageProcessor(str(tmp_path / "in"), str(tmp_path / "out"), **kw, n_workers=1).run()
     s = pd.read_csv(tmp_path / "out" / "batch_summary.csv").set_index("image")
     assert s.loc["with_angles", "sza"] == 35 and pd.isna(s.loc["with_angles", "default_angles"])
     assert s.loc["without_angles", "sza"] == 30 and s.loc["without_angles", "default_angles"] == "sza vza"
     # per-image dict: the image without angles gets them, the other keeps its header values
-    BatchImageProcessor(str(tmp_path / "in"), str(tmp_path / "out2"), processor_kwargs=kw, n_workers=1,
+    BatchImageProcessor(str(tmp_path / "in"), str(tmp_path / "out2"), **kw, n_workers=1,
                         sza={"without_angles": 50}, vza={"without_angles": 20}).run()
     s = pd.read_csv(tmp_path / "out2" / "batch_summary.csv").set_index("image")
     assert (s.loc["without_angles", "sza"], s.loc["without_angles", "vza"]) == (50, 20)
     assert s.loc["with_angles", "sza"] == 35
+    assert s.loc["without_angles", "input_notes"] == "sza=argument vza=argument"
+    # a number for all images: only used where the header has no angles; the header wins elsewhere
+    BatchImageProcessor(str(tmp_path / "in"), str(tmp_path / "out3"), **kw, n_workers=1, sza=50, vza=20).run()
+    s = pd.read_csv(tmp_path / "out3" / "batch_summary.csv").set_index("image")
+    assert (s.loc["with_angles", "sza"], s.loc["without_angles", "sza"]) == (35, 50)
+    assert s.loc["with_angles", "input_notes"] == "sza=header_differs_from_given vza=header_differs_from_given"
     # a summary with other columns (older miniwasi) is kept under a new name, not appended to
     (tmp_path / "out2" / "batch_summary.csv").write_text("image,valid_pixels\nx,1\n")
-    BatchImageProcessor(str(tmp_path / "in"), str(tmp_path / "out2"), processor_kwargs=kw, n_workers=1,
+    BatchImageProcessor(str(tmp_path / "in"), str(tmp_path / "out2"), **kw, n_workers=1,
                         skip_existing=False).run()
     assert len(list((tmp_path / "out2").glob("batch_summary_old_*.csv"))) == 1
     assert pd.read_csv(tmp_path / "out2" / "batch_summary.csv").columns[-1] == "error"
+
+
+# ---- BIL / BIP input ---------------------------------------------------------------------------------
+def test_bil_bip_input(tmp_path, model):
+    from spectral import envi
+    P = random_params(12, seed=5)
+    cube = model.forward(**P).reshape(3, 4, WL.size).astype(np.float32)
+    meta = {"wavelength": list(WL), "fwhm": [5.0] * WL.size, "sza": [35], "vza": [12]}
+    kw = dict(vary=VARY, init=INIT, output_wcs=["C_x", "C_y", "C_3"], n_jobs=1, progress=False, T=14)
+    res = {}
+    for fmt in ("bsq", "bil", "bip"):
+        envi.save_image(str(tmp_path / f"in_{fmt}.hdr"), cube, dtype=np.float32, interleave=fmt, ext=f".{fmt}",
+                        metadata=meta, force=True)
+        # output extension is always set to .bsq
+        (tmp_path / "single").mkdir(exist_ok=True)
+        p = ImageProcessor(str(tmp_path / f"in_{fmt}.{fmt}"), str(tmp_path / "single" / f"out_{fmt}.{fmt}"), **kw)
+        res[fmt] = p.run()
+        assert p.out_path.endswith(f"out_{fmt}.bsq") and (tmp_path / "single" / f"out_{fmt}.bsq").exists()
+        assert envi.read_envi_header(str(tmp_path / "single" / f"out_{fmt}.hdr"))["interleave"] == "bsq"
+    np.testing.assert_array_equal(res["bil"], res["bsq"])
+    np.testing.assert_array_equal(res["bip"], res["bsq"])
+
+    # batch: all three formats found; names without extension resolved
+    import pandas as pd
+    b = BatchImageProcessor(str(tmp_path), str(tmp_path / "batch"), n_workers=1,
+                            **{k: v for k, v in kw.items() if k not in ("n_jobs", "progress")})
+    assert sorted(os.path.basename(x) for x in b._pending_images()) == ["in_bil.bil", "in_bip.bip", "in_bsq.bsq"]
+    b.run()
+    s = pd.read_csv(tmp_path / "batch" / "batch_summary.csv")
+    assert set(s.image) == {"in_bsq", "in_bil", "in_bip"} and s.error.isna().all()
+    for name in ("in_bsq", "in_bil", "in_bip"):
+        assert (tmp_path / "batch" / f"{name}.bsq").exists()
+    b2 = BatchImageProcessor(str(tmp_path), str(tmp_path / "batch2"), images=["in_bil", "in_bip.bip"])
+    assert [os.path.basename(x) for x in b2._pending_images()] == ["in_bil.bil", "in_bip.bip"]
 

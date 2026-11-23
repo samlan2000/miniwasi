@@ -11,11 +11,11 @@ class MiniWasi():
     Vectorised WASI-type bio-optical model for deep water.
     """
 
-    def __init__(self, wavelengths = np.arange(400,900), FWHMs = None,
-                 T=20, vza=0.0001, sza=40,
+    def __init__(self, wavelengths = np.arange(400,901), FWHMs = 1,
+                 T=20, vza=0.0001, sza=30,
                  bb_nap_spec=0.0086, bb_mie_spec=0.0042, a_spec_nap_440nm=0.041, bb_phy_spec=0.001, 
-                 s_cdom=0.014, s_nap=0.011, n=-1, b=0.00111,
-                 a_norm_y_from_file = False, resampling = "bandresampler", sigma_Lu = 0.02
+                 s_cdom=0.014, s_nap=0.011, n=-1, b=0.00111, sigma_Lu = 0.02, sigma=0.03, nw=1.33, Q=5,
+                 a_norm_y_from_file = False, resampling = "bandresampler"
                  ):
 
         self.wavelengths = np.asarray(wavelengths, dtype=float)
@@ -29,6 +29,9 @@ class MiniWasi():
         self.s_nap = s_nap
         self.n = n
         self.b = b
+        self.sigma = sigma
+        self.nw = nw
+        self.Q = Q
         # Reflection factor for upwelling radiance at the water surface (WASI: sigma_Lu, sigma_L^-),
         # used in R_rs = (1 - sigma_Ed)(1 - sigma_Lu)/n_W^2 * ...:
         #   a number (scalar or one value per observation; WASI default: constant 0.02), or
@@ -220,9 +223,9 @@ class MiniWasi():
         
         # xi = (1 - sigma_Ed) * (1 - sigma_Lu) / nW**2 with sigma_Ed = 0.03, nW = 1.33 (WASI defaults);
         # 0.5374 for sigma_Lu = 0.02 (the constant used in WASI6)
-        self.xi = (1-0.03)*(1-sigma_Lu)/1.33**2
+        self.xi = (1-self.sigma)*(1-sigma_Lu)/self.nw**2
 
-        self.R_rs = self.xi * (self.r_rs_below/(1-0.54*5*self.r_rs_below))
+        self.R_rs = self.xi * (self.r_rs_below/(1-0.54*self.Q*self.r_rs_below))
 
         # Kd for jonas
         self.Kd = 1.0546 * ((self.a + self.bb) / np.cos(inwater_sza))
